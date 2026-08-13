@@ -2,6 +2,12 @@ module Zoho
   class LeadToContact
     # Wires LeadToContact up to the CRM: finds the records, resolves the Account
     # the lead's company points at, then applies (or just prints) the plan.
+    #
+    # One person often has *several* leads — a PDF download and a contact-form
+    # enquiry an hour apart, say — and the richest one is frequently the one
+    # still awaiting approval, which Zoho's search hides by default. So this
+    # gathers every lead for the email and folds them in oldest-first, rather
+    # than merging whichever single record happened to surface.
     class Runner
       class NotFound < StandardError; end
 
@@ -10,80 +16,101 @@ module Zoho
         @logger = logger
       end
 
-      # lead:        lead id, or an email address to look one up by
-      # contact:     contact id — defaults to the lead's converted contact, then
+      # lead:        lead id, or an email address to gather every lead for
+      # contact:     contact id — defaults to a lead's converted contact, then
       #              to a contact with the same email
       # strategy:    :fill_blanks (default) or :prefer_lead
-      # create_account: create the Account named by the lead's Company if missing
+      # create_account: create the Account named by a lead's Company if missing
       # dry_run:     build and return the plan without writing anything
       def call(lead:, contact: nil, strategy: :fill_blanks, create_account: false, dry_run: false)
-        lead_record = find_lead(lead)
-        contact_record = find_contact(contact, lead_record)
-        account_id = resolve_account_id(lead_record, contact_record, create_account: create_account, dry_run: dry_run)
+        leads = find_leads(lead)
+        contact_record = find_contact(contact, leads)
 
-        plan = LeadToContact.new(
-          lead: lead_record,
-          contact: contact_record,
-          strategy: strategy,
-          account_id: account_id
-        ).plan
+        log "Contact #{contact_record["id"]} (#{contact_record["Full_Name"]}) <- #{leads.size} lead#{"s" unless leads.one?}"
 
-        log "Lead #{lead_record["id"]} (#{lead_record["Full_Name"]}) -> Contact #{contact_record["id"]} (#{contact_record["Full_Name"]})"
-        log plan.to_s
+        # Each lead plans against the contact as the previous leads have left it,
+        # so later leads fill only what is still blank and descriptions stack in
+        # chronological order.
+        contact_state = contact_record.dup
+        changes = {}
 
-        if dry_run
-          log "Dry run — nothing written."
-        elsif plan.empty?
-          log "Nothing to write."
-        else
-          client.update_record("Contacts", contact_record["id"], plan.changes)
-          log "Contact #{contact_record["id"]} updated."
+        leads.each do |lead_record|
+          account_id = resolve_account_id(lead_record, contact_state, create_account: create_account, dry_run: dry_run)
+
+          plan = LeadToContact.new(
+            lead: lead_record,
+            contact: contact_state,
+            strategy: strategy,
+            account_id: account_id
+          ).plan
+
+          log "\nLead #{lead_record["id"]} (#{lead_record["Lead_Source"]}, created #{lead_record["Created_Time"]})#{" [#{lead_record["$approval_state"]}]" if unapproved?(lead_record)}"
+          log plan.to_s
+
+          contact_state.merge!(plan.changes)
+          changes.merge!(plan.changes)
         end
 
-        plan
+        warn_about_leftovers(leads)
+
+        if dry_run
+          log "\nDry run — nothing written."
+        elsif changes.empty?
+          log "\nNothing to write."
+        else
+          client.update_record("Contacts", contact_record["id"], changes)
+          log "\nContact #{contact_record["id"]} updated (#{changes.keys.size} fields)."
+        end
+
+        changes
       end
 
       private
         attr_reader :client, :logger
 
-        def find_lead(lead)
-          record =
+        def find_leads(lead)
+          leads =
             if lead.to_s.include?("@")
-              # Converted leads are excluded from search by default.
-              client.search_records("Leads", criteria: "(Email:equals:#{lead})", converted: "both").first
+              client.search_all_records("Leads", criteria: "(Email:equals:#{lead})")
             else
-              client.find_record("Leads", lead)
+              Array(client.find_record("Leads", lead))
             end
 
-          record or raise NotFound, "No lead found for #{lead.inspect}"
+          raise NotFound, "No lead found for #{lead.inspect}" if leads.empty?
+
+          leads.sort_by { |record| record["Created_Time"].to_s }
         end
 
-        def find_contact(contact, lead_record)
+        def find_contact(contact, leads)
           if contact.present?
             record = client.find_record("Contacts", contact)
             return record if record
             raise NotFound, "No contact found for #{contact.inspect}"
           end
 
-          if (converted = lead_record["Converted_Contact"]).present?
-            record = client.find_record("Contacts", converted["id"])
-            return record if record
+          converted = leads.filter_map { |lead| lead.dig("Converted_Contact", "id") }.uniq
+          if converted.many?
+            raise NotFound, "Leads point at more than one contact (#{converted.join(", ")}) — pass contact: to choose"
           end
 
-          email = lead_record["Email"]
-          raise NotFound, "Lead #{lead_record["id"]} has no converted contact and no email to match on" if email.blank?
+          if converted.any? && (record = client.find_record("Contacts", converted.first))
+            return record
+          end
 
-          record = client.search_records("Contacts", criteria: "(Email:equals:#{email})").first
-          record or raise NotFound, "No contact matches lead #{lead_record["id"]} (#{email}) — convert the lead first, or pass contact:"
+          email = leads.filter_map { |lead| lead["Email"] }.first
+          raise NotFound, "No converted contact and no email to match on" if email.blank?
+
+          record = client.search_all_records("Contacts", criteria: "(Email:equals:#{email})").first
+          record or raise NotFound, "No contact matches #{email} — convert a lead first, or pass contact:"
         end
 
-        def resolve_account_id(lead_record, contact_record, create_account:, dry_run:)
-          return contact_record.dig("Account_Name", "id") if contact_record["Account_Name"].present?
+        def resolve_account_id(lead_record, contact_state, create_account:, dry_run:)
+          return contact_state.dig("Account_Name", "id") if contact_state["Account_Name"].present?
 
           company = lead_record["Company"].to_s.strip
           return nil if company.blank?
 
-          existing = client.search_records("Accounts", criteria: "(Account_Name:equals:#{company})", fields: "id,Account_Name").first
+          existing = client.search_all_records("Accounts", criteria: "(Account_Name:equals:#{company})", fields: "id,Account_Name").first
           if existing
             log "Matched Account #{existing["id"]} for company #{company.inspect}."
             return existing["id"]
@@ -104,8 +131,24 @@ module Zoho
           created["id"]
         end
 
+        # Merging copies the data across but leaves the lead itself alone. Say so,
+        # so an unapproved or unconverted lead is not left to rot in the module.
+        def warn_about_leftovers(leads)
+          leftovers = leads.reject { |lead| lead["Converted__s"] || lead.dig("$converted_detail", "contact").present? }
+          return if leftovers.empty?
+
+          leftovers.each do |lead|
+            state = unapproved?(lead) ? " (#{lead["$approval_state"]})" : ""
+            log "Note: lead #{lead["id"]}#{state} is still unconverted — its data is now on the contact, but the lead record remains."
+          end
+        end
+
+        def unapproved?(lead)
+          lead["$approval_state"].present? && lead["$approval_state"] != "approved"
+        end
+
         def log(message)
-          return if message.blank?
+          return if message.nil?
 
           logger ? logger.info(message) : puts(message)
         end

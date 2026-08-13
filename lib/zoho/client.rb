@@ -25,6 +25,10 @@ module Zoho
     DEFAULT_ACCOUNTS_DOMAIN = "https://accounts.zoho.eu"
     DEFAULT_API_DOMAIN = "https://www.zohoapis.eu"
 
+    # nil is Zoho's default (approved only). Web-form leads awaiting approval sit
+    # in `webform_unapproved` and are invisible to an ordinary search.
+    APPROVAL_STATES = [ nil, "webform_unapproved", "approval_process_pending" ].freeze
+
     def initialize(client_id: ENV["ZOHO_CLIENT_ID"],
                    client_secret: ENV["ZOHO_CLIENT_SECRET"],
                    refresh_token: ENV["ZOHO_REFRESH_TOKEN"],
@@ -43,15 +47,30 @@ module Zoho
       Array(response["data"]).first
     end
 
-    # Zoho blocks the plain related-list/search endpoints on a converted lead, so
-    # callers that need a converted lead should fetch it by id instead.
-    def search_records(module_name, criteria:, fields: nil, converted: nil)
+    # Two Zoho search defaults will hide records from you if you let them:
+    #
+    #   converted       — defaults to false, so converted leads vanish
+    #   approval_state  — defaults to approved, so a lead sitting in
+    #                     `webform_unapproved` vanish too
+    #
+    # Both are opt-in and only take one value at a time, so `search_all_records`
+    # below unions across states rather than trusting a single call.
+    def search_records(module_name, criteria:, fields: nil, converted: nil, approval_state: nil)
       params = { criteria: criteria }
       params[:fields] = Array(fields).join(",") if fields
       params[:converted] = converted unless converted.nil?
+      params[:approval_state] = approval_state unless approval_state.nil?
 
       response = get("/crm/v8/#{module_name}/search", params)
       Array(response["data"])
+    end
+
+    # Every record matching the criteria regardless of conversion or approval
+    # state, de-duplicated by id.
+    def search_all_records(module_name, criteria:, fields: nil, approval_states: APPROVAL_STATES)
+      approval_states.flat_map { |state|
+        search_records(module_name, criteria: criteria, fields: fields, converted: "both", approval_state: state)
+      }.uniq { |record| record["id"] }
     end
 
     def create_record(module_name, attributes)

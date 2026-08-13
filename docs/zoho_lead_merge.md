@@ -8,6 +8,18 @@ nowhere to land unless a matching Account already exists. That is how a converte
 contact ends up with no company on it. This utility makes the mapping explicit:
 every lead field is copied, deliberately skipped, or reported as a warning.
 
+It also gathers **every** lead for the person, not just the one that happens to
+surface. Two of Zoho's search defaults hide records:
+
+- `converted` defaults to `false`, so already-converted leads disappear
+- `approval_state` defaults to approved, so a web-form lead sitting in
+  `webform_unapproved` disappears too
+
+Those two together are how the richest lead for a person — the contact-form
+enquiry with the company, title, phone and the whole qualification story — can be
+invisible while a sparse PDF-download lead is the only one you can see.
+`Zoho::Client#search_all_records` sweeps across both axes and de-duplicates.
+
 ## Setup
 
 Credentials come from the environment (self-client OAuth in the Zoho API console):
@@ -39,11 +51,16 @@ CREATE_ACCOUNT=true bin/rails 'zoho:merge_lead[amc@internationalmarinesystem.com
 CONTACT=696428000009128001 STRATEGY=prefer_lead bin/rails 'zoho:merge_lead[696428000009119001]'
 ```
 
-The contact is resolved in this order: the `CONTACT` you pass, then the lead's
-converted contact, then a contact with the same email address.
+Passing an **email** gathers every lead for that address; passing a **lead id**
+merges just that one. The contact is resolved in this order: the `CONTACT` you
+pass, then a lead's converted contact, then a contact with the same email.
 
 ## Merge rules
 
+- Multiple leads are folded in **oldest first**, each planning against the contact
+  as the previous leads left it. So first-touch values (`Lead_Source`) survive,
+  later leads fill only what is still blank, and descriptions stack in
+  chronological order.
 - **`fill_blanks` (default)** — only writes contact fields that are currently
   empty. Conflicts are listed under "Skipped" rather than applied.
 - **`prefer_lead`** — lead values win, and each overwrite is printed as a warning.
@@ -55,6 +72,16 @@ converted contact, then a contact with the same email address.
   one. A contact already linked to a *different* Account is never relinked.
 - Firmographics (`Industry`, `No_of_Employees`, `Annual_Revenue`) are reported,
   not copied — they describe the company, so they belong on the Account.
+- Merging copies data across but leaves the lead records alone. Any lead left
+  unconverted is called out at the end of the run, so it is not forgotten.
+
+## Note on the existing automation
+
+This org already has a workflow rule, "Auto-merge Lead into existing Contact",
+backed by a Deluge function `autoMergeLeadIntoContact`. It fires on approval and
+**deletes** the lead. Anything that function fails to carry across is gone with
+it, with no record left to re-run against — so prefer running this utility (or at
+minimum `DRY_RUN=true`) *before* approving a web-form lead.
 
 ## Layout
 
