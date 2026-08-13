@@ -9,7 +9,13 @@ class Zoho::AccountResolverTest < ActiveSupport::TestCase
     { "id" => "3", "Account_Name" => "MB92" },
     { "id" => "4", "Account_Name" => "Alewijnse Marine Systems" },
     { "id" => "5", "Account_Name" => "Alewijnse" },
-    { "id" => "6", "Account_Name" => "Sunreef Yachts" }
+    { "id" => "6", "Account_Name" => "Sunreef Yachts" },
+    { "id" => "7", "Account_Name" => "De Vries Scheepsbouw", "Aliases" => "Koninklijke De Vries\nDe Vries Makkum" }
+  ].freeze
+
+  VESSELS = [
+    { "id" => "v1", "Name" => "MY Virtuosity" },
+    { "id" => "v2", "Name" => "Emir" }
   ].freeze
 
   class FakeClient
@@ -22,7 +28,9 @@ class Zoho::AccountResolverTest < ActiveSupport::TestCase
     def query(coql)
       @queries << coql
       tokens = coql.scan(/like '%(.*?)%'/).flatten.map(&:downcase)
-      ACCOUNTS.select { |account| tokens.any? { |token| account["Account_Name"].downcase.include?(token) } }
+      rows = coql.include?("from Vessels") ? VESSELS : ACCOUNTS
+      key = coql.include?("from Vessels") ? "Name" : "Account_Name"
+      rows.select { |row| tokens.any? { |token| "#{row[key]} #{row["Aliases"]}".downcase.include?(token) } }
     end
   end
 
@@ -44,7 +52,7 @@ class Zoho::AccountResolverTest < ActiveSupport::TestCase
     assert result.ambiguous?
     assert_not result.creatable?
     assert_equal %w[1 2], result.candidates.map { |c| c["id"] }.sort
-    assert_match "not an exact match", result.to_s
+    assert_match "resembles existing Accounts", result.to_s
   end
 
   test "MB92 Barcelona does not become a second MB92" do
@@ -54,13 +62,42 @@ class Zoho::AccountResolverTest < ActiveSupport::TestCase
     assert_equal [ "3" ], result.candidates.map { |c| c["id"] }
   end
 
-  test "vessels and placeholders never become accounts" do
-    [ "87m Feadship", "Private Yacht", "M/Y Amadeus", "Motoryacht" ].each do |value|
+  test "filler never becomes an account" do
+    [ "Private Yacht", "Motoryacht", "N/A" ].each do |value|
       result = @resolver.resolve(value)
 
-      assert result.placeholder?, "#{value.inspect} should be a placeholder"
+      assert result.placeholder?, "#{value.inspect} should be filler"
       assert_not result.creatable?
     end
+  end
+
+  test "a vessel resolves to the vessel registry, not a builder-named account" do
+    result = @resolver.resolve("MY Virtuosity")
+
+    assert result.vessel?
+    assert_equal "v1", result.vessel_id
+    assert_not result.creatable?, "a vessel is never created as a plain company"
+  end
+
+  test "a vessel with no registry entry is reported, not invented" do
+    result = @resolver.resolve("87m Feadship")
+
+    assert result.vessel?
+    assert_nil result.vessel_id
+    assert_match "must not become an Account named after its builder", result.to_s
+  end
+
+  test "a recorded alias resolves straight to its account" do
+    result = @resolver.resolve("Koninklijke De Vries")
+
+    assert result.matched?
+    assert_equal "7", result.account_id
+  end
+
+  test "sibling companies in a group are flagged, never merged" do
+    result = @resolver.resolve("Feadship Royal Van Lent")
+
+    assert_match "same business or separate entities in one group", result.to_s
   end
 
   test "a genuinely new company is creatable" do

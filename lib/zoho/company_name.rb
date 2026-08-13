@@ -29,8 +29,7 @@ module Zoho
       companies design designs consulting consultants management the and of
     ].freeze
 
-    # Values that name a vessel, a placeholder or a job description rather than a
-    # company. Creating an Account from one of these is always wrong.
+    # Filler: names nothing identifiable at all. Never an Account, never a Vessel.
     PLACEHOLDER_EXACT = [
       "private", "private yacht", "private company", "private client", "private owner",
       "yacht", "yachts", "motoryacht", "motor yacht", "sailing yacht", "superyacht",
@@ -38,13 +37,20 @@ module Zoho
       "self employed", "freelance", "retired", "student", "home", "confidential"
     ].freeze
 
-    PLACEHOLDER_PATTERNS = [
-      %r{\Am/?[yv]\b}i,                       # "M/Y Amadeus", "MY Amadeus"
-      %r{\As/?[yv]\b}i,                       # "S/Y ..."
-      /\A\d+\s*(m|ft|feet|metre|meter)s?\b/i, # "87m Feadship", "96m Feadship"
+    # Names a *specific* vessel or build project. Unlike filler, these are real
+    # entities — they just belong in the Vessels module, linked to an Account,
+    # rather than being invented as a company named after the builder.
+    VESSEL_PATTERNS = [
+      %r{\Am[/.]?[yv]\b}i,                       # "M/Y Amadeus", "MY Virtuosity"
+      %r{\As[/.]?[yv]\b}i,                       # "S/Y Lionheart"
+      /\A\d+\s*(m|ft|feet|metre|meter)s?\b/i,    # "87m Feadship", "96m Feadship"
       /\b\d+\s*(m|ft|feet|metre|meter)s?\+?\b/i, # "M/Y Feadship 75m+", "Sunseeker predator 82 feet"
-      /\A(private|new build|newbuild)\b.*\b(yacht|vessel|boat|superyacht)\b/i
+      /\A(motor|sailing|sail)\s*yacht\s+\S/i,    # "Motor Yacht Serenity" (but not "Motor Yacht Build ltd")
+      /\A(new ?build|hull)\b/i
     ].freeze
+
+    # Prefixes stripped to recover the vessel's own name for a registry lookup.
+    VESSEL_PREFIX = %r{\A(m[/.]?[yv]|s[/.]?[yv]|motor\s*yacht|sailing\s*yacht|superyacht)\b[\s.:-]*}i
 
     # Lowercased, de-accented, stripped of legal form and punctuation.
     #
@@ -87,14 +93,41 @@ module Zoho
       (distinctive_tokens(a) & distinctive_tokens(b)).any?
     end
 
-    # Names a vessel, a placeholder, or nothing at all.
+    # Names nothing identifiable — filler, not a company and not a vessel.
     def placeholder?(value)
       normalized = normalize(value)
       return true if normalized.blank?
       return true if PLACEHOLDER_EXACT.include?(normalized)
-      return true if distinctive_tokens(value).empty?
 
-      PLACEHOLDER_PATTERNS.any? { |pattern| pattern.match?(value.to_s.strip) }
+      distinctive_tokens(value).empty? && !vessel?(value)
+    end
+
+    # Names a specific vessel or build project. These are real entities and
+    # belong in the Vessels module — often named after the builder ("MY 78m
+    # Feadship"), which is exactly why they must not become an Account of that
+    # name.
+    def vessel?(value)
+      text = value.to_s.strip
+      return false if text.blank?
+      return false if PLACEHOLDER_EXACT.include?(normalize(value))
+      # A legal form settles it: hulls are not incorporated, companies are.
+      # This is what separates "Motor Yacht Build ltd" from "Motor Yacht Serenity".
+      return false if legal_form?(value)
+
+      VESSEL_PATTERNS.any? { |pattern| pattern.match?(text) }
+    end
+
+    # Does the raw name carry a legal form (Ltd, B.V., GmbH) before it is stripped?
+    def legal_form?(value)
+      text = transliterate(value.to_s.downcase).delete(".")
+      (text.gsub(/[^a-z0-9]+/, " ").split(" ") & LEGAL_SUFFIXES).any?
+    end
+
+    # The vessel's own name, with the type prefix removed, for a registry lookup.
+    #
+    #   vessel_name("M/Y Emir") # => "Emir"
+    def vessel_name(value)
+      value.to_s.strip.sub(VESSEL_PREFIX, "").strip
     end
 
     # Tokens worth searching Accounts on. Every distinctive token is tried, not

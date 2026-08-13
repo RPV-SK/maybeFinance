@@ -149,7 +149,9 @@ module Zoho
 
           changes["Account_Name"] = { "id" => account_id } if existing_account.blank?
         elsif company.present? && existing_account.blank?
-          warnings << "Lead company #{company.inspect} has no Account to link to — resolve or create the Account and re-run with account_id:"
+          # AccountResolver reports *why* separately; this only records that the
+          # company travelled with the lead but did not land on the contact.
+          warnings << "Lead company #{company.inspect} was not linked to an Account — the contact has no company set."
         end
       end
 

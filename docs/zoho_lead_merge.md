@@ -83,28 +83,58 @@ across its leads (`Royal Van Lent Shipyard`, `Feadship Royal Van Lent`,
 `87m Feadship`, `Feadship Amsterdam`) while two Feadship Accounts already exist;
 `MB92 Barcelona` and `MB92 Group` sit against an account called plain `MB92`.
 
-So `Zoho::AccountResolver` normalises both sides — case, accents, punctuation and
+But a near-match is **not** evidence of a duplicate. Feadship's yards — Royal Van
+Lent, De Voogt, De Vries — are separate legal entities that must stay separate,
+parented to a Feadship group account. Alewijnse, by contrast, is one business
+under several spellings. Only a human knows which is which, so the resolver
+reports and defers rather than merging.
+
+`Zoho::AccountResolver` normalises both sides — case, accents, punctuation and
 legal form (`B.V.`, `GmbH`, `SARL`) — searches Accounts on the identifying tokens
-rather than the whole string, and returns one of four outcomes:
+rather than the whole string, and returns one of five outcomes:
 
 | Outcome | Meaning | Action |
 | --- | --- | --- |
-| `matched` | normalised names identical | links the Account |
+| `matched` | name or a recorded alias matches | links the Account |
 | `ambiguous` | related Accounts exist | lists them, links and creates **nothing** |
-| `placeholder` | names a vessel or is filler | never creates an Account |
+| `vessel` | names a vessel or build project | links to Vessels; never a builder-named Account |
+| `placeholder` | filler, names nothing | never creates |
 | `absent` | nothing resembling it exists | creates one, given `CREATE_ACCOUNT=true` |
 
 Only `matched` is acted on unattended. A wrong guess is expensive — a duplicate
-Account splits a customer's history in two — so ambiguity is handed back to a
-human along with the candidate list.
+Account splits a customer's history in two, and a wrong *merge* fuses two real
+companies — so ambiguity goes back to a human with the candidate list.
 
-The `placeholder` guard matters because lead `Company` frequently holds something
-that is not a company at all: `Private Yacht`, `Motoryacht`, `M/Y Amadeus`,
-`87m Feadship`, `Sunseeker predator 82 feet`. `Private Yacht` is already an
-Account in this org, so this has happened before.
+### Aliases
 
-Token overlap is only ever a *suggestion*: `MB92 Barcelona` will not silently
-attach itself to `MB92`, because they may genuinely be different yards.
+Normalisation narrows the candidates; it cannot know your business. The
+`Aliases` field on Accounts closes that loop: record a spelling there once
+(one per line) and every future lead using it resolves automatically. This is
+what actually retires the twelve-spellings problem.
+
+### Vessels
+
+Lead `Company` frequently names a vessel rather than an employer — often after
+the builder, as in `MY 78m Feadship`. Those are real entities, but they belong in
+the **Vessels** module (4,000+ records already), not as an Account named after a
+shipyard that did not send the enquiry.
+
+A vessel *may* have its own Account when it is its own commercial entity, but only
+one carrying the `Vessel` lookup back to the registry — the resolver will not
+create a bare Account for a vessel name, and refuses entirely if no Vessel record
+exists yet.
+
+Genuine filler (`Private Yacht`, `Motoryacht`, `N/A`) is rejected outright. A legal
+form settles the borderline cases: hulls are not incorporated, so
+`Motor Yacht Build ltd` is a company while `Motor Yacht Serenity` is a vessel.
+
+### Group structure
+
+Multi-site groups use Zoho's native hierarchy rather than one flattened record:
+`MB92` as parent, `MB92 Barcelona` and `MB92 La Ciotat` as children with their own
+addresses and `Account_Site`. One account has one address, so flattening loses
+which yard a project is at — and the shared email domain is a reason not to key
+accounts on domain, not a reason to merge the sites.
 
 ## Note on the existing automation
 
@@ -119,7 +149,9 @@ minimum `DRY_RUN=true`) *before* approving a web-form lead.
 | File | Role |
 | --- | --- |
 | `lib/zoho/lead_to_contact.rb` | The merge rules. Pure — no network I/O, so it is directly testable. |
-| `lib/zoho/lead_to_contact/runner.rb` | Finds the records, resolves the Account, applies the plan. |
+| `lib/zoho/lead_to_contact/runner.rb` | Gathers the leads, resolves contact/Account, applies the plan. |
+| `lib/zoho/company_name.rb` | Name normalisation; tells companies, vessels and filler apart. |
+| `lib/zoho/account_resolver.rb` | Decides which Account a company belongs to — or refuses to. |
 | `lib/zoho/client.rb` | Minimal Zoho v8 REST client (stdlib only). |
 | `lib/tasks/zoho.rake` | The `zoho:merge_lead` entry point. |
 | `test/lib/zoho/lead_to_contact_test.rb` | Covers the merge rules. |

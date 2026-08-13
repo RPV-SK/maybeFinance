@@ -115,9 +115,10 @@ module Zoho
 
           return result.account_id if result.matched?
 
-          # Ambiguous and placeholder both refuse to create. Guessing wrong here
-          # is expensive: a duplicate Account splits a customer's history in two.
-          return nil unless result.creatable?
+          # A vessel may have its own account, but only one carrying the link to
+          # the vessel registry — never a bare account named after its builder.
+          attributes = creatable_attributes(result)
+          return nil if attributes.nil?
 
           unless create_account
             log "Re-run with create_account: true to create it."
@@ -125,13 +126,22 @@ module Zoho
           end
 
           if dry_run
-            log "Would create Account #{company.inspect}."
+            log "Would create Account #{attributes["Account_Name"].inspect}#{" linked to vessel #{result.vessel_id}" if result.vessel?}."
             return nil
           end
 
-          created = client.create_record("Accounts", { "Account_Name" => company })
+          created = client.create_record("Accounts", attributes)
           log "Created Account #{created["id"]} for #{company.inspect}."
           created["id"]
+        end
+
+        # nil means "do not create under any circumstances".
+        def creatable_attributes(result)
+          if result.creatable?
+            { "Account_Name" => result.company }
+          elsif result.vessel? && result.vessel_id
+            { "Account_Name" => result.company, "Vessel" => { "id" => result.vessel_id } }
+          end
         end
 
         def account_resolver

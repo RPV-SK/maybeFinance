@@ -152,7 +152,7 @@ class Zoho::LeadToContact::RunnerTest < ActiveSupport::TestCase
 
     assert_empty client.created
     assert_not changes.key?("Account_Name")
-    assert_match "not an exact match", @logger.to_s
+    assert_match "resembles existing Accounts", @logger.to_s
   end
 
   test "never creates an account from a vessel name" do

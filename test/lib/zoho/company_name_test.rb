@@ -28,14 +28,35 @@ class Zoho::CompanyNameTest < ActiveSupport::TestCase
     assert_not Zoho::CompanyName.related?("Monaco Marine", "Prime Marine")
   end
 
-  test "placeholder? rejects vessels and filler" do
-    [
-      "Private Yacht", "Motoryacht", "Super Yachts", "M/Y Amadeus",
-      "87m Feadship", "96m Feadship", "M/Y Feadship 75m+",
-      "Sunseeker predator 82 feet", "N/A", "Unknown", "freelance"
-    ].each do |value|
-      assert Zoho::CompanyName.placeholder?(value), "#{value.inspect} should be rejected"
+  test "placeholder? rejects filler that names nothing" do
+    [ "Private Yacht", "Motoryacht", "Super Yachts", "N/A", "Unknown", "freelance" ].each do |value|
+      assert Zoho::CompanyName.placeholder?(value), "#{value.inspect} should be filler"
     end
+  end
+
+  # A vessel is a real entity, not filler. It belongs in the Vessels module,
+  # linked to an account — never invented as a company named after its builder.
+  test "vessel? recognises vessels and build projects" do
+    [
+      "M/Y Amadeus", "MY Virtuosity", "S/Y Lionheart", "87m Feadship",
+      "96m Feadship", "M/Y Feadship 75m+", "Sunseeker predator 82 feet",
+      "MY 78m Feadship"
+    ].each do |value|
+      assert Zoho::CompanyName.vessel?(value), "#{value.inspect} should be a vessel"
+      assert_not Zoho::CompanyName.placeholder?(value), "#{value.inspect} is not filler"
+    end
+  end
+
+  test "vessel? does not swallow companies that merely mention yachts" do
+    [ "Motor Yacht Build ltd", "Turquoise Yachts", "Vanquish Yachts", "FEADSHIP" ].each do |value|
+      assert_not Zoho::CompanyName.vessel?(value), "#{value.inspect} is a company"
+    end
+  end
+
+  test "vessel_name strips the type prefix for a registry lookup" do
+    assert_equal "Emir", Zoho::CompanyName.vessel_name("M/Y Emir")
+    assert_equal "Virtuosity", Zoho::CompanyName.vessel_name("MY Virtuosity")
+    assert_equal "Lionheart", Zoho::CompanyName.vessel_name("S/Y Lionheart")
   end
 
   test "placeholder? accepts real companies" do
