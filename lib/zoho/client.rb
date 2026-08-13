@@ -73,6 +73,13 @@ module Zoho
       }.uniq { |record| record["id"] }
     end
 
+    # COQL, for the `like` searches the search endpoint cannot express.
+    # Note: beyond two conditions, COQL requires explicit parenthesised nesting.
+    def query(coql)
+      response = post("/crm/v8/coql", { select_query: coql })
+      Array(response["data"])
+    end
+
     def create_record(module_name, attributes)
       response = post("/crm/v8/#{module_name}", { data: [ attributes ] })
       first_record_detail(response)

@@ -110,14 +110,17 @@ module Zoho
           company = lead_record["Company"].to_s.strip
           return nil if company.blank?
 
-          existing = client.search_all_records("Accounts", criteria: "(Account_Name:equals:#{company})", fields: "id,Account_Name").first
-          if existing
-            log "Matched Account #{existing["id"]} for company #{company.inspect}."
-            return existing["id"]
-          end
+          result = account_resolver.resolve(company)
+          log result.to_s
+
+          return result.account_id if result.matched?
+
+          # Ambiguous and placeholder both refuse to create. Guessing wrong here
+          # is expensive: a duplicate Account splits a customer's history in two.
+          return nil unless result.creatable?
 
           unless create_account
-            log "No Account named #{company.inspect}. Re-run with create_account: true to create one."
+            log "Re-run with create_account: true to create it."
             return nil
           end
 
@@ -129,6 +132,10 @@ module Zoho
           created = client.create_record("Accounts", { "Account_Name" => company })
           log "Created Account #{created["id"]} for #{company.inspect}."
           created["id"]
+        end
+
+        def account_resolver
+          @account_resolver ||= Zoho::AccountResolver.new(client: client)
         end
 
         # Merging copies the data across but leaves the lead itself alone. Say so,

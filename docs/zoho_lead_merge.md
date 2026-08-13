@@ -67,13 +67,44 @@ pass, then a lead's converted contact, then a contact with the same email.
 - A blank lead field never erases a populated contact field, under either strategy.
 - `Description` is **appended**, not replaced, under a `[Lead merge <date>] Merged
   from lead <id>.` stamp. Re-running is a no-op rather than a duplicate.
-- `Company` needs an Account lookup. With no Account resolved, the run warns
-  instead of silently dropping the company — pass `CREATE_ACCOUNT=true` to create
-  one. A contact already linked to a *different* Account is never relinked.
+- `Company` needs an Account lookup — see **Account matching** below. A contact
+  already linked to a *different* Account is never relinked.
 - Firmographics (`Industry`, `No_of_Employees`, `Annual_Revenue`) are reported,
   not copied — they describe the company, so they belong on the Account.
 - Merging copies data across but leaves the lead records alone. Any lead left
   unconverted is called out at the end of the run, so it is not forgotten.
+
+## Account matching
+
+Matching lead `Company` against `Account_Name` **exactly** finds a match about one
+time in eight in this database, so an exact-match-then-create rule does not fill a
+gap — it manufactures duplicates. Measured here: Feadship is spelled twelve ways
+across its leads (`Royal Van Lent Shipyard`, `Feadship Royal Van Lent`,
+`87m Feadship`, `Feadship Amsterdam`) while two Feadship Accounts already exist;
+`MB92 Barcelona` and `MB92 Group` sit against an account called plain `MB92`.
+
+So `Zoho::AccountResolver` normalises both sides — case, accents, punctuation and
+legal form (`B.V.`, `GmbH`, `SARL`) — searches Accounts on the identifying tokens
+rather than the whole string, and returns one of four outcomes:
+
+| Outcome | Meaning | Action |
+| --- | --- | --- |
+| `matched` | normalised names identical | links the Account |
+| `ambiguous` | related Accounts exist | lists them, links and creates **nothing** |
+| `placeholder` | names a vessel or is filler | never creates an Account |
+| `absent` | nothing resembling it exists | creates one, given `CREATE_ACCOUNT=true` |
+
+Only `matched` is acted on unattended. A wrong guess is expensive — a duplicate
+Account splits a customer's history in two — so ambiguity is handed back to a
+human along with the candidate list.
+
+The `placeholder` guard matters because lead `Company` frequently holds something
+that is not a company at all: `Private Yacht`, `Motoryacht`, `M/Y Amadeus`,
+`87m Feadship`, `Sunseeker predator 82 feet`. `Private Yacht` is already an
+Account in this org, so this has happened before.
+
+Token overlap is only ever a *suggestion*: `MB92 Barcelona` will not silently
+attach itself to `MB92`, because they may genuinely be different yards.
 
 ## Note on the existing automation
 

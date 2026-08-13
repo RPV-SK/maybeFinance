@@ -37,6 +37,11 @@ class Zoho::LeadToContact::RunnerTest < ActiveSupport::TestCase
       collection_for(module_name)
     end
 
+    def query(coql)
+      tokens = coql.scan(/like '%(.*?)%'/).flatten.map(&:downcase)
+      @accounts.select { |account| tokens.any? { |token| account["Account_Name"].to_s.downcase.include?(token) } }
+    end
+
     def create_record(module_name, attributes)
       @created << [ module_name, attributes ]
       { "id" => "acc-new" }
@@ -133,6 +138,31 @@ class Zoho::LeadToContact::RunnerTest < ActiveSupport::TestCase
     Zoho::LeadToContact::Runner.new(client: client, logger: @logger).call(lead: "amc@example.com", create_account: true)
 
     assert_equal [ [ "Accounts", { "Account_Name" => "INTERNATIONAL MARINE SYSTEM SARL" } ] ], client.created
+  end
+
+  test "does not create a duplicate when a similar account already exists" do
+    @rich_lead["Company"] = "Feadship Royal Van Lent"
+    client = FakeClient.new(
+      leads: [ @rich_lead, @sparse_lead ],
+      contacts: [ @contact ],
+      accounts: [ { "id" => "acc-1", "Account_Name" => "FEADSHIP" } ]
+    )
+
+    changes = Zoho::LeadToContact::Runner.new(client: client, logger: @logger).call(lead: "amc@example.com", create_account: true)
+
+    assert_empty client.created
+    assert_not changes.key?("Account_Name")
+    assert_match "not an exact match", @logger.to_s
+  end
+
+  test "never creates an account from a vessel name" do
+    @rich_lead["Company"] = "87m Feadship"
+    client = FakeClient.new(leads: [ @rich_lead, @sparse_lead ], contacts: [ @contact ])
+
+    Zoho::LeadToContact::Runner.new(client: client, logger: @logger).call(lead: "amc@example.com", create_account: true)
+
+    assert_empty client.created
+    assert_match "names a vessel", @logger.to_s
   end
 
   private
